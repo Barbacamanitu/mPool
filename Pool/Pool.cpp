@@ -1,11 +1,9 @@
-// Pool.cpp : Defines the entry point for the console application.
-//
-
 #include "stdafx.h"
 #include <vector>
 #include <memory>
 #include <iostream>
-
+#include "Poolable.h"
+#include <ctime>
 class Pool
 {
 private:
@@ -27,13 +25,26 @@ public:
 		}
 	}
 
+	struct PoolReturner
+	{
+		PoolReturner(){};
+		PoolReturner(Pool* p) :mPool(p){};
+		void operator()(Poolable * ptr)
+		{
+			if (mPool != nullptr)
+				mPool->Return(ptr);
+		}
+		Pool* mPool;
+	};
+
 	char * GetOffset(int index)
 	{
 		return (char *)((intptr_t)mPool) + (mObjectSize * index);
 	}
 
+
 	template<class T>
-	T* Get()
+	std::unique_ptr<T,PoolReturner> Get()
 	{
 		if (mAvailableIndices.empty())
 			return nullptr;
@@ -42,20 +53,24 @@ public:
 		mAvailableIndices.pop_back();
 
 		T* newObj = new (GetOffset(index)) T;
-		return newObj;
+
+		std::unique_ptr<T, PoolReturner> newPtr(newObj, PoolReturner(this));
+		return newPtr;
 	}
 
-	void Return(void * ptr)
+	void Return(Poolable * ptr)
 	{
+		ptr->~Poolable();
 		intptr_t offset = (intptr_t)ptr - (intptr_t)mPool;
 		if (offset < 0 || offset >= mCount)
 			return;
+
 
 		mAvailableIndices.push_back(offset);
 	}
 };
 
-class MyObject
+class MyObject : public Poolable
 {
 public:
 	int a;
@@ -63,37 +78,51 @@ public:
 	{
 		a = 100;
 	}
+	~MyObject()
+	{
+		std::cout << "Deleting MyObject @ " << this << "\n";
+	}
 };
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-
+	srand(time(0));
 	Pool pool;
 	pool.Allocate(10, sizeof(MyObject));
-
-	std::vector<MyObject*> objects;
+	typedef std::unique_ptr<MyObject, Pool::PoolReturner> ObjectPtr;
+	std::vector<ObjectPtr> objects;
 
 	int nulled = 0;
+	int created = 0;
+	int deleted = 0;
+
 	for (int i = 0; i < 15; i++)
 	{
-		MyObject* obj = pool.Get<MyObject>();
+		ObjectPtr obj = pool.Get<MyObject>();
 		if (obj != nullptr)
 		{
-			objects.push_back(obj);
-			if (rand() % 100 > 50)
-			{
-				pool.Return(objects.back());
-				objects.pop_back();
-			}
+			created++;
+			objects.push_back(std::move(obj));
 		}
 		else
-			nulled++;
-
-		
+			nulled++;		
 	}
 
-	std::cout << "Objects Created: " << objects.size() << "\n";
-	std::cout << "Null: " << nulled << "\n";
+
+	//DELETE POOL BEFORE OBJECTS DELETED
+
+	//All objects are in vector. Loop through and delete some.
+	int deleteAmount = rand() & objects.size();
+	for (int i = 0; i < deleteAmount; i++)
+	{
+		objects.pop_back();
+		deleted++;
+		//Removes reference which automatically invokes PoolReturner functor.
+	}
+
+	std::cout << "Objects Created: " << created << "\n";
+	std::cout << "Objects Deleted: " << deleted << "\n";
+	std::cout << "Objects Null: " << nulled << "\n";
 
 	while (true)
 	{
